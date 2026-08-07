@@ -1,0 +1,44 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test, lint, type-check and coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Runtime files
+logs/
+*.log
+*.sqlite
+*.sqlite3
+
+# Local-only manual test helpers
+scripts/test_campaign_message.py
+
+# Local campaign source documents; the app uses campanhas_extraidas.json.
+campanhas/*.docx
+campanhas/~$*.docx
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

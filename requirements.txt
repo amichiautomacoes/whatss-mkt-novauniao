@@ -1,0 +1,9 @@
+fastapi
+httpx
+loguru
+pydantic
+pydantic-settings
+psycopg[binary]
+python-dotenv
+supabase
+uvicorn
