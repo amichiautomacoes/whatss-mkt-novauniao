@@ -136,117 +136,12 @@ class CampaignRepository:
             conn.commit()
 
 
-class MessageQueueRepository:
-    def enqueue_many(self, rows: list[dict[str, Any]]) -> int:
-        if not rows:
-            return 0
-
-        query = sql.SQL(
-            """
-            insert into {queue} (
-                campaign_id,
-                lead_key,
-                phone,
-                message,
-                status,
-                attempts,
-                scheduled_at
-            )
-            values (%s, %s, %s, %s, %s, %s, %s)
-            on conflict (campaign_id, lead_key) do update
-            set phone = excluded.phone,
-                message = excluded.message,
-                scheduled_at = excluded.scheduled_at,
-                updated_at = now()
-            where {queue}.status in ('pending', 'failed', 'cancelled')
-            """
-        ).format(queue=table_identifier("whatsapp_message_queue"))
-
-        inserted = 0
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                for row in rows:
-                    cur.execute(
-                        query,
-                        (
-                            row["campaign_id"],
-                            row["lead_key"],
-                            row["phone"],
-                            row["message"],
-                            row.get("status", "pending"),
-                            row.get("attempts", 0),
-                            row["scheduled_at"],
-                        ),
-                    )
-                    inserted += cur.rowcount
-            conn.commit()
-
-        return inserted
-
-    def list_pending(
-        self,
-        limit: int = 20,
-        campaign_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        query = sql.SQL(
-            """
-            select *
-            from {queue}
-            where status = 'pending'
-              and scheduled_at <= now()
-              and phone not in (select phone from {opt_outs})
-            """
-        ).format(
-            queue=table_identifier("whatsapp_message_queue"),
-            opt_outs=table_identifier("whatsapp_opt_outs"),
-        )
-        params: list[Any] = []
-
-        if campaign_id is not None:
-            query += sql.SQL(" and campaign_id = %s")
-            params.append(campaign_id)
-
-        query += sql.SQL(" order by scheduled_at, id limit %s")
-        params.append(limit)
-
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                return list(cur.fetchall())
-
-    def update_status(
-        self,
-        message_id: int,
-        status: str,
-        extra: dict[str, Any] | None = None,
-    ) -> None:
-        payload = {"status": status, "updated_at": datetime.now(timezone.utc)}
-        payload.update(extra or {})
-
-        set_parts = []
-        params: list[Any] = []
-        for key, value in payload.items():
-            set_parts.append(sql.SQL("{} = %s").format(sql.Identifier(key)))
-            params.append(Jsonb(value) if key == "provider_response" else value)
-
-        params.append(message_id)
-        query = sql.SQL("update {queue} set {sets} where id = %s").format(
-            queue=table_identifier("whatsapp_message_queue"),
-            sets=sql.SQL(", ").join(set_parts),
-        )
-
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-            conn.commit()
-
-
 class MessageEventRepository:
     def create(
         self,
         event_type: str,
         payload: dict[str, Any],
-        message_id: int | None = None,
+        message_id: str | None = None,
         campaign_id: int | None = None,
         lead_key: str | None = None,
         phone: str | None = None,
@@ -272,3 +167,43 @@ class MessageEventRepository:
                     (message_id, campaign_id, lead_key, phone, event_type, Jsonb(payload)),
                 )
             conn.commit()
+
+    def list_lead_keys_with_events(
+        self,
+        campaign_id: int,
+        event_types: list[str],
+    ) -> set[str]:
+        if not event_types:
+            return set()
+
+        query = sql.SQL(
+            """
+            select distinct lead_key
+            from {events}
+            where campaign_id = %s
+              and event_type = any(%s::text[])
+              and lead_key is not null
+            """
+        ).format(events=table_identifier("whatsapp_message_events"))
+
+        with get_postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (campaign_id, event_types))
+                return {row["lead_key"] for row in cur.fetchall()}
+
+
+class OptOutRepository:
+    def is_opted_out(self, phone: str) -> bool:
+        query = sql.SQL(
+            """
+            select 1
+            from {opt_outs}
+            where phone = %s
+            limit 1
+            """
+        ).format(opt_outs=table_identifier("whatsapp_opt_outs"))
+
+        with get_postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (phone,))
+                return cur.fetchone() is not None

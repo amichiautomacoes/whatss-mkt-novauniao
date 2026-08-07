@@ -13,7 +13,9 @@ Automacao para disparo controlado de mensagens via WhatsApp usando Evolution API
 - Templates estruturados em `campanhas/campanhas_extraidas.json`.
 - Saudacao personalizada com `{{decisor}}`.
 - Preview de link ativado na Evolution API com `linkPreview: true`.
-- Fila de disparo criada no Supabase, ainda sem disparar mensagens.
+- Fila ativa de disparo em Redis.
+- Supabase usado para leads, campanhas, opt-outs e historico/eventos.
+- Mensagens ainda sem disparo real.
 
 ## Lotes
 
@@ -31,10 +33,11 @@ Criadas no schema `mkt_novauniao`:
 
 ```text
 whatsapp_campaigns
-whatsapp_message_queue
 whatsapp_message_events
 whatsapp_opt_outs
 ```
+
+A fila ativa nao fica no Supabase. Ela fica no Redis, usando chaves com o prefixo configurado em `REDIS_QUEUE_PREFIX`.
 
 ## Agendamento Inicial
 
@@ -107,6 +110,80 @@ Subir API local/FastAPI:
 
 ```powershell
 uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+## Docker / EasyPanel
+
+O projeto tem dois containers separados:
+
+```text
+Dockerfile          API FastAPI
+Dockerfile.worker   Worker/cron de disparo da fila Redis
+```
+
+Tambem e necessario um servico Redis interno no EasyPanel.
+
+API:
+
+```bash
+docker build -t whatsapp-mkt-api -f Dockerfile .
+docker run --env-file .env -p 8000:8000 whatsapp-mkt-api
+```
+
+Worker/cron:
+
+```bash
+docker build -t whatsapp-mkt-worker -f Dockerfile.worker .
+docker run --env-file .env whatsapp-mkt-worker
+```
+
+No EasyPanel:
+
+```text
+Servico API
+- Dockerfile: Dockerfile
+- Porta interna: 8000
+- Health check: /health
+- Dominio: https://SEU_DOMINIO
+- Variavel REDIS_URL apontando para o servico Redis
+
+Servico Worker
+- Dockerfile: Dockerfile.worker
+- Sem dominio publico
+- Mesmo conjunto de variaveis de ambiente da API
+- Variavel REDIS_URL apontando para o servico Redis
+
+Servico Redis
+- Sem dominio publico
+- Persistencia/volume ativado, se disponivel
+```
+
+Variaveis Redis:
+
+```env
+REDIS_URL=redis://redis:6379/0
+REDIS_QUEUE_PREFIX=whatsapp_mkt
+REDIS_VISIBILITY_TIMEOUT_SECONDS=300
+REDIS_RETRY_DELAY_SECONDS=300
+REDIS_MAX_ATTEMPTS=3
+```
+
+Variaveis especificas do worker:
+
+```env
+WORKER_INTERVAL_SECONDS=60
+WORKER_BATCH_SIZE=1
+```
+
+Com `WORKER_BATCH_SIZE=1`, o worker processa no maximo uma mensagem por ciclo. O intervalo real entre mensagens tambem respeita `scheduled_at` da fila Redis e o rate limit interno quando o lote tiver mais de uma mensagem.
+
+Chaves Redis usadas pela fila:
+
+```text
+whatsapp_mkt:scheduled    mensagens agendadas/prontas para envio
+whatsapp_mkt:processing   mensagens em processamento com visibility timeout
+whatsapp_mkt:failed       mensagens que excederam tentativas
+whatsapp_mkt:message:*    payload de cada mensagem ativa
 ```
 
 ## Webhooks

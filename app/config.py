@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     morning_send_start: str = Field(default="09:00", alias="MORNING_SEND_START")
     afternoon_send_start: str = Field(default="14:00", alias="AFTERNOON_SEND_START")
 
+    redis_url: str = Field(default="", alias="REDIS_URL")
+    redis_queue_prefix: str = Field(default="whatsapp_mkt", alias="REDIS_QUEUE_PREFIX")
+    redis_visibility_timeout_seconds: int = Field(
+        default=300,
+        alias="REDIS_VISIBILITY_TIMEOUT_SECONDS",
+    )
+    redis_retry_delay_seconds: int = Field(default=300, alias="REDIS_RETRY_DELAY_SECONDS")
+    redis_max_attempts: int = Field(default=3, alias="REDIS_MAX_ATTEMPTS")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -29,37 +29,9 @@ def main() -> None:
         ),
         sql.SQL(
             """
-            create table if not exists {schema}.whatsapp_message_queue (
-                id bigint generated always as identity primary key,
-                campaign_id bigint not null
-                    references {schema}.whatsapp_campaigns(id)
-                    on delete cascade,
-                lead_key text not null
-                    references {schema}.whatsapp_mkt(lead_key)
-                    on delete cascade,
-                phone text not null,
-                message text not null,
-                status text not null default 'pending'
-                    check (status in ('pending', 'processing', 'sent', 'failed', 'delivered', 'read', 'replied', 'opt_out', 'cancelled')),
-                attempts integer not null default 0,
-                last_error text,
-                provider_message_id text,
-                provider_response jsonb,
-                scheduled_at timestamptz not null default now(),
-                sent_at timestamptz,
-                created_at timestamptz not null default now(),
-                updated_at timestamptz not null default now(),
-                unique (campaign_id, lead_key)
-            )
-            """
-        ),
-        sql.SQL(
-            """
             create table if not exists {schema}.whatsapp_message_events (
                 id bigint generated always as identity primary key,
-                message_id bigint
-                    references {schema}.whatsapp_message_queue(id)
-                    on delete set null,
+                message_id text,
                 campaign_id bigint
                     references {schema}.whatsapp_campaigns(id)
                     on delete set null,
@@ -94,13 +66,10 @@ def main() -> None:
             "create index if not exists whatsapp_mkt_lote_idx on {schema}.whatsapp_mkt(lote)"
         ),
         sql.SQL(
-            "create index if not exists whatsapp_message_queue_status_idx on {schema}.whatsapp_message_queue(status, scheduled_at)"
-        ),
-        sql.SQL(
-            "create index if not exists whatsapp_message_queue_campaign_idx on {schema}.whatsapp_message_queue(campaign_id)"
-        ),
-        sql.SQL(
             "create index if not exists whatsapp_message_events_phone_idx on {schema}.whatsapp_message_events(phone)"
+        ),
+        sql.SQL(
+            "create index if not exists whatsapp_message_events_campaign_lead_idx on {schema}.whatsapp_message_events(campaign_id, lead_key)"
         ),
     ]
 

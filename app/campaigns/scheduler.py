@@ -3,10 +3,11 @@ from datetime import date
 from app.campaigns.queue_builder import build_queue_rows
 from app.db.repositories import (
     CampaignRepository,
-    MessageQueueRepository,
+    MessageEventRepository,
     WhatsAppLeadRepository,
 )
 from app.leads.segmentation import filter_eligible_leads
+from app.queue.redis_queue import RedisMessageQueue
 
 
 def create_campaign_queue(
@@ -22,12 +23,33 @@ def create_campaign_queue(
 
     leads = WhatsAppLeadRepository().list_by_lote(campaign["lote"], limit=limit)
     eligible_leads = filter_eligible_leads(leads)
+    event_repo = MessageEventRepository()
+    already_sent_lead_keys = event_repo.list_lead_keys_with_events(
+        campaign_id=campaign_id,
+        event_types=["sent"],
+    )
+    eligible_leads = [
+        lead
+        for lead in eligible_leads
+        if lead["lead_key"] not in already_sent_lead_keys
+    ]
     rows = build_queue_rows(
         campaign_id,
         eligible_leads,
         campaign["message_template"],
         send_date=send_date,
     )
-    inserted = MessageQueueRepository().enqueue_many(rows)
+    inserted = RedisMessageQueue().enqueue_many(rows)
+    for row in rows:
+        event_repo.create(
+            event_type="queued",
+            payload={
+                "redis_message_id": f"{row['campaign_id']}:{row['lead_key']}",
+                "scheduled_at": row["scheduled_at"].isoformat(),
+            },
+            campaign_id=row["campaign_id"],
+            lead_key=row["lead_key"],
+            phone=row["phone"],
+        )
     CampaignRepository().update_status(campaign_id, "queued")
     return inserted
