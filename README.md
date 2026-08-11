@@ -15,6 +15,8 @@ Automacao para disparo controlado de mensagens via WhatsApp usando Evolution API
 - Preview de link ativado na Evolution API com `linkPreview: true`.
 - Fila ativa de disparo em Redis.
 - Supabase usado para leads, campanhas, opt-outs e historico/eventos.
+- Agendamento automatico pela planilha Google Sheets `Cronograma Whatsapp MKT`,
+  aba `Agenda Whatsapp`.
 - Mensagens ainda sem disparo real.
 
 ## Lotes
@@ -39,32 +41,74 @@ whatsapp_opt_outs
 
 A fila ativa nao fica no Supabase. Ela fica no Redis, usando chaves com o prefixo configurado em `REDIS_QUEUE_PREFIX`.
 
-## Agendamento Inicial
+## Agendamento por Planilha
 
-Rate limit conservador:
+A fonte de verdade do agendamento passa a ser a planilha Google Sheets
+`Cronograma Whatsapp MKT`, aba `Agenda Whatsapp`. A service account precisa ter
+acesso a essa planilha.
+
+A aba deve ter estas colunas:
 
 ```text
-1 mensagem por minuto
-manha: 10:00
-tarde: 14:00
-timezone: America/Sao_Paulo
+Data | Dia | Janela | Horario inicio | Campanha | Lote | Qtd envios | Status | Observacoes
 ```
 
-Campanhas ja agendadas:
+Colunas usadas pelo worker:
 
 ```text
-Campanha 1 | lote1 | 10/08/2026 | 70 mensagens
-Campanha 2 | lote2 | 11/08/2026 | 70 mensagens
-Campanha 3 | lote3 | 12/08/2026 | 69 mensagens
-Campanha 4 | lote4 | 13/08/2026 | 69 mensagens
-Campanha 5 | lote5 | 14/08/2026 | 69 mensagens
+Data
+Horario inicio
+Campanha
+Lote
+Qtd envios
+Status
 ```
 
-Distribuicao:
+`Dia`, `Janela` e `Observacoes` sao informativas. Linhas com `Status` igual a
+`Cancelada`, `Pausada` ou `Ignorar` nao sao processadas. `Agendada` e vazio sao
+considerados ativos.
+
+O worker roda a cada `WORKER_INTERVAL_SECONDS`, le a planilha no timezone
+`America/Sao_Paulo`, enfileira as linhas vencidas no Redis e em seguida dispara
+a fila. Com `WORKER_BATCH_SIZE=1`, ele envia no maximo uma mensagem por ciclo.
+
+Exemplo de agenda:
 
 ```text
-lotes de 70: 35 manha, 35 tarde
-lotes de 69: 35 manha, 34 tarde
+Campanha 1 | lote1 | 12/08/2026 | 10:00 | 35 mensagens
+Campanha 1 | lote1 | 12/08/2026 | 14:00 | 35 mensagens
+Campanha 2 | lote2 | 13/08/2026 | 10:00 | 35 mensagens
+Campanha 2 | lote2 | 13/08/2026 | 14:00 | 35 mensagens
+```
+
+Cada linha cria/atualiza a campanha no Supabase e enfileira a proxima fatia de
+leads daquele lote, ignorando leads que ja tenham evento `queued` ou `sent` para
+a mesma campanha. Isso evita repetir os mesmos contatos quando a campanha tem
+janela de manha e tarde.
+
+Variaveis do agendamento:
+
+```env
+GOOGLE_SERVICE_ACCOUNT_FILE=mkt-novauniao-d64a259b4a40.json
+GOOGLE_SERVICE_ACCOUNT_JSON=
+GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=
+WHATSAPP_SCHEDULE_ENABLED=true
+WHATSAPP_SCHEDULE_DRY_RUN=false
+WHATSAPP_SCHEDULE_LIMIT=
+WHATSAPP_SCHEDULE_SPREADSHEET_NAME=Cronograma Whatsapp MKT
+WHATSAPP_SCHEDULE_SPREADSHEET_ID=
+WHATSAPP_SCHEDULE_SHEET_NAME=Agenda Whatsapp
+```
+
+Em producao, prefira configurar `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` como secret
+em vez de copiar o arquivo JSON da service account para a imagem Docker.
+
+Rodar manualmente o agendamento da planilha:
+
+```powershell
+python scripts\run_scheduled_campaign.py
+python scripts\run_scheduled_campaign.py --run-date 2026-08-12
+python scripts\run_scheduled_campaign.py --run-date 2026-08-12 --run-time 10:00 --dry-run
 ```
 
 ## Como Usar
@@ -94,17 +138,22 @@ Criar ou atualizar tabelas operacionais:
 python scripts\create_operational_tables.py
 ```
 
-Recriar/agendar as campanhas iniciais:
-
-```powershell
-python scripts\schedule_initial_campaigns.py
-```
-
 Enviar mensagem de teste:
 
 ```powershell
 python scripts\test_send.py --phone 5511999999999 --message "Ola! Veja esse post: https://www.instagram.com/p/Dbq1A8roEjQ/?utm_source=ig_web_copy_link&igsh=MzRlODBiNWFlZA=="
 ```
+
+Enviar preview de campanha para o numero interno:
+
+```powershell
+python scripts\send_campaign_preview.py --campaign-number 1
+python scripts\send_campaign_preview.py --campaign-number 2 --dry-run
+python scripts\send_campaign_preview.py --all
+```
+
+Por padrao, o preview vai para `5531994963959` e usa `Hugo` em `{{decisor}}`.
+Use `--phone` e `--decisor` para sobrescrever.
 
 Subir API local/FastAPI:
 

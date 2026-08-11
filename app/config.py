@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,11 +12,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    supabase_url: str = Field(default="", alias="SUPABASE_URL")
-    supabase_service_role_key: str = Field(
-        default="",
-        validation_alias=AliasChoices("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY"),
-    )
     supabase_database_url: str = Field(default="", alias="SUPABASE_DATABASE_URL")
     supabase_schema: str = Field(default="public", alias="SUPABASE_SCHEMA")
 
@@ -39,6 +35,31 @@ class Settings(BaseSettings):
     campaign_timezone: str = Field(default="America/Sao_Paulo", alias="CAMPAIGN_TIMEZONE")
     morning_send_start: str = Field(default="09:00", alias="MORNING_SEND_START")
     afternoon_send_start: str = Field(default="14:00", alias="AFTERNOON_SEND_START")
+
+    google_service_account_file: Path = Field(
+        default=Path("mkt-novauniao-d64a259b4a40.json"),
+        alias="GOOGLE_SERVICE_ACCOUNT_FILE",
+    )
+    google_service_account_json: str = Field(
+        default="",
+        alias="GOOGLE_SERVICE_ACCOUNT_JSON",
+    )
+    google_service_account_json_base64: str = Field(
+        default="",
+        alias="GOOGLE_SERVICE_ACCOUNT_JSON_BASE64",
+    )
+    whatsapp_schedule_spreadsheet_id: str = Field(
+        default="",
+        alias="WHATSAPP_SCHEDULE_SPREADSHEET_ID",
+    )
+    whatsapp_schedule_spreadsheet_name: str = Field(
+        default="Cronograma Whatsapp MKT",
+        alias="WHATSAPP_SCHEDULE_SPREADSHEET_NAME",
+    )
+    whatsapp_schedule_sheet_name: str = Field(
+        default="Agenda Whatsapp",
+        alias="WHATSAPP_SCHEDULE_SHEET_NAME",
+    )
 
     redis_url: str = Field(default="", alias="REDIS_URL")
     redis_queue_prefix: str = Field(default="whatsapp_mkt", alias="REDIS_QUEUE_PREFIX")

@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+mkt-novauniao-d64a259b4a40.json
+GOOGLE_SERVICE_ACCOUNT*.json
 
 # Python environments and caches
 .venv/
@@ -29,9 +31,6 @@ logs/
 *.log
 *.sqlite
 *.sqlite3
-
-# Local-only manual test helpers
-scripts/test_campaign_message.py
 
 # Local campaign source documents; the app uses campanhas_extraidas.json.
 campanhas/*.docx

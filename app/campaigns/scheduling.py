@@ -44,3 +44,9 @@ def build_split_schedule(total: int, send_date: date | None = None) -> list[date
         for index in range(afternoon_count)
     )
     return schedule
+
+
+def build_linear_schedule(total: int, start_at: datetime) -> list[datetime]:
+    settings = get_settings()
+    delay = timedelta(seconds=settings.default_send_delay_seconds)
+    return [start_at + (delay * index) for index in range(total)]
