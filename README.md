@@ -11,8 +11,12 @@ Automacao para disparo controlado de mensagens via WhatsApp usando Evolution API
 - Coluna `lote` criada e preenchida.
 - Campanhas extraidas de `campanhas/Campanhas.docx`.
 - Templates estruturados em `campanhas/campanhas_extraidas.json`.
+- Imagens de campanha organizadas em `campanhas/imagens/`.
+- Campanha 1 configurada com `campanhas/imagens/Campanha 1.png`.
 - Saudacao personalizada com `{{decisor}}`.
-- Preview de link ativado na Evolution API com `linkPreview: true`.
+- Preview automatico de link desativado na Evolution API com `linkPreview: false`.
+- Campanhas com `image_path` sao enviadas pela Evolution API como `sendMedia`
+  com a mensagem no campo `caption`.
 - Fila ativa de disparo em Redis.
 - Supabase usado para leads, campanhas, opt-outs e historico/eventos.
 - Agendamento automatico pela planilha Google Sheets `Cronograma Whatsapp MKT`,
@@ -141,8 +145,11 @@ python scripts\create_operational_tables.py
 Enviar mensagem de teste:
 
 ```powershell
-python scripts\test_send.py --phone 5511999999999 --message "Ola! Veja esse post: https://www.instagram.com/p/Dbq1A8roEjQ/?utm_source=ig_web_copy_link&igsh=MzRlODBiNWFlZA=="
+python scripts\test_send.py --phone 5511999999999 --message "Ola! Veja esse post: https://instagram.com/p/Dbq1A8roEjQ/"
 ```
+
+Use `--link-preview` apenas se quiser testar explicitamente o card automatico
+do WhatsApp.
 
 Enviar preview de campanha para o numero interno:
 
@@ -153,7 +160,10 @@ python scripts\send_campaign_preview.py --all
 ```
 
 Por padrao, o preview vai para `5531994963959` e usa `Hugo` em `{{decisor}}`.
-Use `--phone` e `--decisor` para sobrescrever.
+Use `--phone` e `--decisor` para sobrescrever. O card automatico de link fica
+desativado por padrao; use `--link-preview` somente para testar esse card.
+Quando a campanha tiver `image_path`, o preview envia a imagem como midia com a
+mensagem no caption, igual ao disparo real.
 
 Subir API local/FastAPI:
 
@@ -271,7 +281,7 @@ Enviar mensagem direta de teste:
 curl.exe -X POST "https://SEU_DOMINIO/webhooks/dispatch" `
   -H "Content-Type: application/json" `
   -H "X-Dispatch-Token: SEU_TOKEN" `
-  -d "{\"phone\":\"5511999999999\",\"message\":\"Ola! Veja esse post: https://www.instagram.com/p/Dbq1A8roEjQ/?utm_source=ig_web_copy_link&igsh=MzRlODBiNWFlZA==\",\"link_preview\":true}"
+  -d "{\"phone\":\"5511999999999\",\"message\":\"Ola! Veja esse post: https://instagram.com/p/Dbq1A8roEjQ/\",\"link_preview\":false}"
 ```
 
 Disparar uma campanha da fila de forma controlada:
@@ -295,12 +305,12 @@ Antes de disparar para os leads reais:
 
 1. Testar a conexao da Evolution API e confirmar que a instancia esta conectada.
 2. Enviar uma mensagem de teste para um numero nosso.
-3. Confirmar se o preview do Instagram aparece corretamente no WhatsApp.
+3. Confirmar se o link curto do Instagram chega sem card automatico no WhatsApp.
 4. Rodar um teste controlado com `--batch-size 1` na Campanha 1.
 5. Se tudo estiver certo, deixar o agendamento rodar campanha por campanha.
 
 Comando sugerido para a proxima retomada:
 
 ```powershell
-python scripts\test_send.py --phone SEU_NUMERO --message "Ola! Veja esse post: https://www.instagram.com/p/Dbq1A8roEjQ/?utm_source=ig_web_copy_link&igsh=MzRlODBiNWFlZA=="
+python scripts\test_send.py --phone SEU_NUMERO --message "Ola! Veja esse post: https://instagram.com/p/Dbq1A8roEjQ/"
 ```

@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
         help="Delay between messages when using --all. Default: 2.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print without sending.")
+    parser.add_argument("--link-preview", action="store_true")
     parser.add_argument("--no-link-preview", action="store_true")
     return parser.parse_args()
 
@@ -125,20 +126,30 @@ def main() -> None:
     for index, template in enumerate(templates):
         name = str(template.get("nome") or f"Campanha {index + 1}")
         message = render_template(str(template["corpo"]), lead)
+        image_path = str(template.get("image_path") or "").strip()
 
         print(f"Campanha: {name}")
         print(f"Telefone preview: {args.phone}")
         print(f"Modo: {'DRY RUN' if args.dry_run else 'ENVIO REAL'}")
+        if image_path:
+            print(f"Imagem: {image_path}")
         print("--- Mensagem ---")
         print(message)
         print("----------------")
 
         if client is not None:
-            result = client.send_text(
-                phone=args.phone,
-                message=message,
-                link_preview=not args.no_link_preview,
-            )
+            if image_path:
+                result = client.send_image(
+                    phone=args.phone,
+                    image_path=image_path,
+                    caption=message,
+                )
+            else:
+                result = client.send_text(
+                    phone=args.phone,
+                    message=message,
+                    link_preview=args.link_preview and not args.no_link_preview,
+                )
             print(f"Enviado: {result}")
 
         if index < len(templates) - 1 and not args.dry_run:

@@ -16,6 +16,7 @@ def build_queue_rows(
     campaign_id: int,
     leads: list[dict[str, Any]],
     message_template: str,
+    image_path: str = "",
     send_date: date | None = None,
     scheduled_start_at: datetime | None = None,
 ) -> list[dict[str, Any]]:
@@ -36,6 +37,7 @@ def build_queue_rows(
                 "lead_key": lead["lead_key"],
                 "phone": phone,
                 "message": render_template(message_template, lead),
+                "image_path": image_path,
                 "status": "pending",
                 "attempts": 0,
                 "scheduled_at": scheduled_at,

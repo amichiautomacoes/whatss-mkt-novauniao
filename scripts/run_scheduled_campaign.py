@@ -1,11 +1,7 @@
 import argparse
-import json
 import os
-import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 try:
@@ -13,6 +9,10 @@ try:
 except ModuleNotFoundError:
     from scripts import _path  # noqa: F401
 from app.campaigns.scheduler import create_campaign_queue
+from app.campaigns.templates import (
+    find_campaign_message_template,
+    load_campaign_templates,
+)
 from app.config import Settings, get_settings
 from app.db.repositories import CampaignRepository
 from app.scheduling.google_sheets import (
@@ -102,7 +102,10 @@ def run_due_scheduled_campaigns(
     results: list[ScheduledRunResult] = []
 
     for scheduled_campaign in scheduled_campaigns:
-        message_template = _find_template_body(templates, scheduled_campaign.campaign_name)
+        message_template = find_campaign_message_template(
+            scheduled_campaign.campaign_name,
+            templates,
+        )
         row_limit = scheduled_campaign.limit or limit
         start_at = datetime.combine(
             scheduled_campaign.send_date,
@@ -143,26 +146,6 @@ def run_due_scheduled_campaigns(
         )
 
     return results
-
-
-def _load_campaign_templates() -> list[dict]:
-    path = Path("campanhas/campanhas_extraidas.json")
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _find_template_body(templates: list[dict], campaign_name: str) -> str:
-    target = _normalize_lookup_key(campaign_name)
-    for template in templates:
-        if _normalize_lookup_key(str(template.get("nome", ""))) == target:
-            return str(template["corpo"])
-    raise RuntimeError(f"Template nao encontrado para {campaign_name!r}")
-
-
-def _normalize_lookup_key(value: str) -> str:
-    without_accents = (
-        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    )
-    return re.sub(r"[^a-z0-9]", "", without_accents.lower())
 
 
 def parse_args() -> argparse.Namespace:

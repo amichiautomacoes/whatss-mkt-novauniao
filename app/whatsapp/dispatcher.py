@@ -65,7 +65,18 @@ def dispatch_campaign_messages(
         try:
             if client is None:
                 client = EvolutionClient()
-            result = client.send_text(row["phone"], row["message"])
+            if row.get("image_path"):
+                result = client.send_image(
+                    phone=row["phone"],
+                    image_path=row["image_path"],
+                    caption=row["message"],
+                )
+            else:
+                result = client.send_text(
+                    row["phone"],
+                    row["message"],
+                    link_preview=False,
+                )
         except Exception as exc:
             will_retry = queue.mark_failed(message_id, str(exc))
             _record_event(
@@ -88,6 +99,7 @@ def dispatch_campaign_messages(
                 payload={
                     "redis_message_id": message_id,
                     "provider_response": result,
+                    "image_path": row.get("image_path") or "",
                     "sent_at": datetime.now(timezone.utc).isoformat(),
                 },
                 row=row,

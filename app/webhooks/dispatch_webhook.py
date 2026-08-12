@@ -17,7 +17,7 @@ class DispatchRequest(BaseModel):
     batch_size: int = Field(default=1, ge=1, le=20)
     phone: str | None = None
     message: str | None = None
-    link_preview: bool = True
+    link_preview: bool = False
 
     @model_validator(mode="after")
     def validate_dispatch_mode(self) -> "DispatchRequest":
