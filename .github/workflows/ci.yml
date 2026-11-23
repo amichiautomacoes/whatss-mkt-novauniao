@@ -1,0 +1,66 @@
+name: Validate project
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run offline tests
+        run: python -m pytest tests -q
+
+  containers:
+    needs: tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: api
+            dockerfile: Dockerfile
+          - service: worker
+            dockerfile: Dockerfile.worker
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build container
+        run: >-
+          docker build --file ${{ matrix.dockerfile }}
+          --tag whatsapp-mkt-${{ matrix.service }}:ci .
+      - name: Check imports, timezone and runtime user without network access
+        run: |
+          docker run --rm --network none --entrypoint python \
+            whatsapp-mkt-${{ matrix.service }}:ci -c \
+            "import os; from zoneinfo import ZoneInfo; from app.main import app; import scripts.cron_worker; assert os.getuid() == 10001; ZoneInfo('America/Sao_Paulo')"
+      - name: Check API health endpoint
+        if: matrix.service == 'api'
+        run: |
+          docker run --detach --network none --name whatsapp-api-ci \
+            whatsapp-mkt-api:ci
+          for attempt in $(seq 1 20); do
+            if docker exec whatsapp-api-ci python -c \
+              "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2); assert response.status == 200; assert json.load(response) == {'status': 'ok'}"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs whatsapp-api-ci
+          exit 1
+      - name: Remove API test container
+        if: always() && matrix.service == 'api'
+        run: docker rm --force whatsapp-api-ci || true

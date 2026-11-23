@@ -1,10 +1,11 @@
 [
   {
-    "nome": "Campanha 1",
-    "corpo": "Olá {{decisor}}! Tudo bem?\n\nSomos fabricantes de etiquetas e tags para lojas de roupas e calçados.\n\nPublicamos um conteúdo mostrando um problema que praticamente toda loja já enfrentou.\n\nConfira: 👉https://instagram.com/p/Dbq1A8roEjQ/\n\nCaso procure um fornecedor para reposição ou materiais personalizados, pode falar conosco pelo WhatsApp.\n\n📲https://wa.me/553141049383",
-    "instagram_url": "https://instagram.com/p/Dbq1A8roEjQ/",
-    "whatsapp_url": "https://wa.me/553141049383",
-    "image_path": "campanhas/imagens/Campanha 1.png"
+    "nome": "Natal 2026",
+    "corpo": "Boa tarde, {{decisor}}! Tudo bem?\n\nAqui é da Nova União. Como está o estoque da sua loja para o Natal?\n\nConheça nosso catálogo de etiquetas adesivas, tags e ribbons para lojas e envios. Compare medidas e cores e encontre o modelo para sua loja:\nhttps://is.gd/novauniao_produtos\n\nSe precisar repor promissórias, ribbons, tags ou etiquetas, fale com nossa vendedora e solicite um orçamento:\nhttps://is.gd/novauniao_orcamento",
+    "whatsapp_url": "https://is.gd/novauniao_orcamento",
+    "whatsapp_destination_url": "https://wa.me/553141049383?text=Ol%C3%A1%21%20Quero%20um%20or%C3%A7amento%20de%20etiquetas%20ou%20tags.%20Posso%20enviar%20a%20medida%2C%20a%20quantidade%20e%20o%20modelo%20da%20impressora.",
+    "products_url": "https://is.gd/novauniao_produtos",
+    "products_destination_url": "https://produtos.etiquetasnovauniao.com.br/"
   },
   {
     "nome": "Campanha 2",

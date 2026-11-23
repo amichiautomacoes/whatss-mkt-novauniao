@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from psycopg import sql
-from psycopg.types.json import Jsonb
 
 from app.config import get_settings
 from app.db.postgres import get_postgres_connection
@@ -16,27 +15,58 @@ def table_identifier(table_name: str) -> sql.Composed:
 
 
 class WhatsAppLeadRepository:
+    def list_opened_since(
+        self, opened_from: datetime, as_of: datetime, campaign_name: str, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        query = sql.SQL(
+            """
+            with contacts as (
+                select id as source_id, lead_key::text as lead_key, empresa,
+                       nome_decisor, email, telefone_contato, lote_key, primeira_abertura,
+                       case when length(regexp_replace(telefone_contato, '[^0-9]', '', 'g')) in (10, 11)
+                            then '55' || regexp_replace(telefone_contato, '[^0-9]', '', 'g')
+                            else regexp_replace(telefone_contato, '[^0-9]', '', 'g') end as phone
+                from {leads}
+                where primeira_abertura >= %s and primeira_abertura <= %s
+            ), unique_contacts as (
+                select distinct on (phone) * from contacts
+                where phone ~ '^55[0-9]{{10,11}}$'
+                  and not exists (
+                      select 1 from {history} h
+                      where h.campaign_name = %s and h.phone = contacts.phone
+                  )
+                order by phone, primeira_abertura, source_id
+            )
+            select * from unique_contacts
+            order by primeira_abertura, source_id
+            limit %s
+            """
+        ).format(
+            leads=table_identifier("whatsapp_marketing"),
+            history=table_identifier("whatsapp_historico"),
+        )
+        with get_postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (opened_from, as_of, campaign_name, limit))
+                return list(cur.fetchall())
+
     def list_by_lote(self, lote: str, limit: int | None = None) -> list[dict[str, Any]]:
         query = sql.SQL(
             """
             select
-                lead_key,
+                id as source_id,
+                lead_key::text as lead_key,
                 empresa,
-                decisor,
+                nome_decisor,
                 email,
-                whatsapp_contato1,
-                whatsapp_contato2,
-                url_instagram,
-                lote
+                telefone_contato,
+                lote_key
             from {leads}
-            where lote = %s
-              and (
-                nullif(whatsapp_contato1, '') is not null
-                or nullif(whatsapp_contato2, '') is not null
-              )
-            order by lead_key
+            where lote_key = %s
+              and nullif(trim(telefone_contato), '') is not null
+            order by id
             """
-        ).format(leads=table_identifier("whatsapp_mkt"))
+        ).format(leads=table_identifier("whatsapp_marketing"))
 
         params: list[Any] = [lote]
         if limit:
@@ -51,12 +81,13 @@ class WhatsAppLeadRepository:
     def count_by_lote(self) -> list[dict[str, Any]]:
         query = sql.SQL(
             """
-            select lote, count(*) as total
+            select lote_key as lote, count(*) as total,
+                   count(distinct lead_key) as unique_leads
             from {leads}
-            group by lote
-            order by lote
+            group by lote_key
+            order by lote_key
             """
-        ).format(leads=table_identifier("whatsapp_mkt"))
+        ).format(leads=table_identifier("whatsapp_marketing"))
 
         with get_postgres_connection() as conn:
             with conn.cursor() as cur:
@@ -68,6 +99,16 @@ LeadRepository = WhatsAppLeadRepository
 
 
 class CampaignRepository:
+    def find(self, name: str, lote: str) -> dict[str, Any] | None:
+        query = sql.SQL("select * from {campaigns} where name = %s and lote = %s").format(
+            campaigns=table_identifier("whatsapp_campaigns")
+        )
+        with get_postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (name, lote))
+                row = cur.fetchone()
+                return dict(row) if row else None
+
     def create(
         self,
         name: str,
@@ -134,62 +175,6 @@ class CampaignRepository:
             with conn.cursor() as cur:
                 cur.execute(query, params)
             conn.commit()
-
-
-class MessageEventRepository:
-    def create(
-        self,
-        event_type: str,
-        payload: dict[str, Any],
-        message_id: str | None = None,
-        campaign_id: int | None = None,
-        lead_key: str | None = None,
-        phone: str | None = None,
-    ) -> None:
-        query = sql.SQL(
-            """
-            insert into {events} (
-                message_id,
-                campaign_id,
-                lead_key,
-                phone,
-                event_type,
-                payload
-            )
-            values (%s, %s, %s, %s, %s, %s)
-            """
-        ).format(events=table_identifier("whatsapp_message_events"))
-
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    query,
-                    (message_id, campaign_id, lead_key, phone, event_type, Jsonb(payload)),
-                )
-            conn.commit()
-
-    def list_lead_keys_with_events(
-        self,
-        campaign_id: int,
-        event_types: list[str],
-    ) -> set[str]:
-        if not event_types:
-            return set()
-
-        query = sql.SQL(
-            """
-            select distinct lead_key
-            from {events}
-            where campaign_id = %s
-              and event_type = any(%s::text[])
-              and lead_key is not null
-            """
-        ).format(events=table_identifier("whatsapp_message_events"))
-
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (campaign_id, event_types))
-                return {row["lead_key"] for row in cur.fetchall()}
 
 
 class OptOutRepository:

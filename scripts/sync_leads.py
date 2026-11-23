@@ -22,11 +22,11 @@ def main() -> None:
         settings = get_settings()
         limit = args.limit or settings.default_batch_size
         leads = repo.list_by_lote(args.lote, limit=limit)
-        print(f"Leads found in {args.lote}: {len(leads)}")
+        print(f"Source rows found in {args.lote}: {len(leads)}")
         return
 
     for row in repo.count_by_lote():
-        print(f"{row['lote']}: {row['total']}")
+        print(f"{row['lote']}: {row['total']} source rows / {row['unique_leads']} unique leads")
 
 
 if __name__ == "__main__":

@@ -1,316 +1,264 @@
-# WhatsApp Marketing Nova Uniao
+# WhatsApp Marketing Nova União
 
-Automacao para disparo controlado de mensagens via WhatsApp usando Evolution API e leads do Supabase.
+Automação em Python para enviar campanhas pela Evolution API aos contatos de
+`mkt_novauniao.whatsapp_marketing`, com agenda baseada nas aberturas de e-mail
+e controle persistente em `mkt_novauniao.whatsapp_historico`.
 
-## Estado Atual
+## Estado atual
 
-- Ambiente virtual criado em `.venv`.
-- Dependencias instaladas via `requirements.txt`.
-- Variaveis locais configuradas em `.env`.
-- Base de origem: `mkt_novauniao.whatsapp_mkt`.
-- Coluna `lote` criada e preenchida.
-- Campanhas extraidas de `campanhas/Campanhas.docx`.
-- Templates estruturados em `campanhas/campanhas_extraidas.json`.
-- Imagens de campanha organizadas em `campanhas/imagens/`.
-- Campanha 1 configurada com `campanhas/imagens/Campanha 1.png`.
-- Saudacao personalizada com `{{decisor}}`.
-- Preview automatico de link desativado na Evolution API com `linkPreview: false`.
-- Campanhas com `image_path` sao enviadas pela Evolution API como `sendMedia`
-  com a mensagem no campo `caption`.
-- Fila ativa de disparo em Redis.
-- Supabase usado para leads, campanhas, opt-outs e historico/eventos.
-- Agendamento automatico pela planilha Google Sheets `Cronograma Whatsapp MKT`,
-  aba `Agenda Whatsapp`.
-- Mensagens ainda sem disparo real.
+As tabelas operacionais foram criadas em 17/11/2026. O histórico também recebeu
+a coluna `email_opened_at`, para registrar a abertura que originou o envio.
 
-## Lotes
+O worker usa o Supabase como fonte do agendamento. O trigger existente continua
+alimentando a origem; o projeto não modifica esse trigger nem altera os leads.
+O Google Sheets não faz parte da rotina automática.
 
-```text
-lote1: 70 leads
-lote2: 70 leads
-lote3: 69 leads
-lote4: 69 leads
-lote5: 69 leads
-```
+A implantação dos containers e o teste real com um número interno são etapas
+separadas. As alterações e validações do agendamento não iniciam o worker.
 
-## Tabelas Operacionais
+Os arquivos para implantação estão preparados para dois serviços App no
+EasyPanel: API na porta interna **8080** e worker sem portas publicadas.
+Siga o [guia de implantação](docs/how-to/implantar-easypanel.md) e use
+[.env.easypanel.example](.env.easypanel.example) como modelo de ambiente.
 
-Criadas no schema `mkt_novauniao`:
+## Regra de envio
 
-```text
-whatsapp_campaigns
-whatsapp_message_events
-whatsapp_opt_outs
-```
+A data do WhatsApp é **o dia calendário seguinte à primeira abertura do e-mail,
+às 14h no fuso America/Sao_Paulo**, incluindo fins de semana.
 
-A fila ativa nao fica no Supabase. Ela fica no Redis, usando chaves com o prefixo configurado em `REDIS_QUEUE_PREFIX`.
+| Primeira abertura em São Paulo | Início previsto |
+|---|---|
+| 17/11/2026 às 09h | 18/11/2026 às 14h |
+| 17/11/2026 às 23h50 | 18/11/2026 às 14h |
+| 18/11/2026 às 00h10 | 19/11/2026 às 14h |
 
-## Agendamento por Planilha
+A regra usa `primeira_abertura`, convertida para o fuso da campanha. Novas
+aberturas do mesmo e-mail não adiam um agendamento reservado. A data do envio
+do e-mail e a data de criação da linha na origem não entram nesse cálculo.
 
-A fonte de verdade do agendamento passa a ser a planilha Google Sheets
-`Cronograma Whatsapp MKT`, aba `Agenda Whatsapp`. A service account precisa ter
-acesso a essa planilha.
+`WHATSAPP_OPENED_FROM=2026-11-17` é o corte inicial, contado a partir de 00h
+em São Paulo. Ele é fixo e configurável, para impedir que a reposição de dados
+antigos pelo trigger gere uma abordagem retroativa. Alterar esse corte não
+cancela reservas já existentes.
 
-A aba deve ter estas colunas:
+## Fluxo automático
 
-```text
-Data | Dia | Janela | Horario inicio | Campanha | Lote | Qtd envios | Status | Observacoes
-```
+1. O trigger atualiza `whatsapp_marketing` com as aberturas elegíveis.
+2. A cada ciclo, o worker consulta primeiras aberturas desde o corte configurado.
+3. Normaliza os telefones, escolhe a primeira abertura elegível de cada telefone
+   e exclui contatos já reservados naquela campanha de WhatsApp.
+4. Reserva o envio no histórico como `pending`, guardando a abertura e a data prevista.
+5. No minuto de início das 14h, abre a janela diária de processamento.
+6. Enfileira e envia as pendências vencidas da campanha automática pelo Redis.
+7. Atualiza o histórico com tentativa, sucesso, erro e resposta da Evolution.
 
-Colunas usadas pelo worker:
+A seleção considera todos os lotes, inclusive contatos sem `lote_key`.
+A campanha operacional usa o lote interno `automatico`. O campo `campanha` da
+origem descreve o e-mail; `WHATSAPP_CAMPAIGN_NAME` escolhe o template de WhatsApp.
 
-```text
-Data
-Horario inicio
-Campanha
-Lote
-Qtd envios
-Status
-```
+A restrição **nome da campanha de WhatsApp + telefone normalizado** impede
+reservas repetidas, inclusive entre lotes e em ciclos ou processos concorrentes.
+O limite de descoberta é aplicado depois da exclusão pelo histórico e da
+deduplicação, para não ficar preso nos primeiros contatos já processados.
 
-`Dia`, `Janela` e `Observacoes` sao informativas. Linhas com `Status` igual a
-`Cancelada`, `Pausada` ou `Ignorar` nao sao processadas. `Agendada` e vazio sao
-considerados ativos.
+## Janela diária e retomada
 
-O worker roda a cada `WORKER_INTERVAL_SECONDS`, le a planilha no timezone
-`America/Sao_Paulo`, enfileira as linhas vencidas no Redis e em seguida dispara
-a fila. Com `WORKER_BATCH_SIZE=1`, ele envia no maximo uma mensagem por ciclo.
+14h é o início da fila. Com um envio por ciclo de 60 segundos, os contatos
+seguintes são processados aproximadamente às 14h01, 14h02 e assim por diante.
 
-Exemplo de agenda:
+A janela abre quando um ciclo ocorre no minuto configurado, das 14h00min00s
+até antes de 14h01min00s. O worker ajusta a espera para acordar no início.
+Depois de aberta, ela continua até o fim do dia local, respeitando os intervalos.
 
-```text
-Campanha 1 | lote1 | 12/08/2026 | 10:00 | 35 mensagens
-Campanha 1 | lote1 | 12/08/2026 | 14:00 | 35 mensagens
-Campanha 2 | lote2 | 13/08/2026 | 10:00 | 35 mensagens
-Campanha 2 | lote2 | 13/08/2026 | 14:00 | 35 mensagens
-```
+Se o worker iniciar ou reiniciar após esse minuto, aguarda as 14h do dia
+seguinte. Uma falha operacional não tratada durante a janela fecha o processamento
+daquele dia; pendências ficam para a próxima janela das 14h. O agendamento
+original fica no histórico, permitindo identificar atrasos.
 
-Cada linha cria/atualiza a campanha no Supabase e enfileira a proxima fatia de
-leads daquele lote, ignorando leads que ja tenham evento `queued` ou `sent` para
-a mesma campanha. Isso evita repetir os mesmos contatos quando a campanha tem
-janela de manha e tarde.
+O processamento considera reservas criadas antes do fim do minuto de abertura.
+Contatos que só se tornarem elegíveis depois desse limite aguardam a próxima
+janela, mesmo quando a data originalmente calculada já tiver passado.
 
-Variaveis do agendamento:
+Os resultados `uncertain` continuam exigindo conferência manual, pois pode ter
+ocorrido um envio sem que a resposta fosse recebida. Eles não são reenviados
+automaticamente na janela seguinte.
 
-```env
-GOOGLE_SERVICE_ACCOUNT_FILE=mkt-novauniao-d64a259b4a40.json
-GOOGLE_SERVICE_ACCOUNT_JSON=
-GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=
-WHATSAPP_SCHEDULE_ENABLED=true
-WHATSAPP_SCHEDULE_DRY_RUN=false
-WHATSAPP_SCHEDULE_LIMIT=
-WHATSAPP_SCHEDULE_SPREADSHEET_NAME=Cronograma Whatsapp MKT
-WHATSAPP_SCHEDULE_SPREADSHEET_ID=
-WHATSAPP_SCHEDULE_SHEET_NAME=Agenda Whatsapp
-```
+Use uma instância do worker para esta rotina. A abertura da janela fica na
+memória do processo, de modo que um reinício fora das 14h aguarde o próximo dia.
+`WHATSAPP_SCHEDULE_DRY_RUN=true` bloqueia reservas e disparos, inclusive se já
+existirem pendências; `WHATSAPP_SCHEDULE_ENABLED=false` desativa a rotina.
 
-Em producao, prefira configurar `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` como secret
-em vez de copiar o arquivo JSON da service account para a imagem Docker.
+## Origem e histórico
 
-Rodar manualmente o agendamento da planilha:
+Campos usados em `whatsapp_marketing`:
 
-```powershell
-python scripts\run_scheduled_campaign.py
-python scripts\run_scheduled_campaign.py --run-date 2026-08-12
-python scripts\run_scheduled_campaign.py --run-date 2026-08-12 --run-time 10:00 --dry-run
-```
+| Campo | Uso |
+|---|---|
+| `id` | Copiado como `source_id` no histórico |
+| `lead_key` | Identificação UUID do lead |
+| `telefone_contato` | Telefone do destinatário |
+| `nome_decisor`, `empresa`, `email`, `lote_key` | Personalização |
+| `primeira_abertura` | Cálculo do dia seguinte às 14h |
 
-## Como Usar
+Templates existentes com `{{decisor}}` e `{{lote}}` continuam funcionando,
+assim como `{{nome_decisor}}` e `{{lote_key}}`.
 
-Ativar ambiente:
+Tabelas operacionais:
+
+- `whatsapp_campaigns`: configuração das campanhas.
+- `whatsapp_historico`: reserva, horário previsto, tentativas e resultado.
+- `whatsapp_opt_outs`: telefones excluídos do envio.
+
+O histórico inclui `email_opened_at`, `scheduled_at`, `last_attempt_at`,
+`sent_at`, `status`, `attempts`, `message`, `image_path`,
+`provider_message_id`, `provider_response` e `last_error`.
+Datas usam `timestamptz`. `source_id` e `lead_key` são referências copiadas,
+sem chave estrangeira para a origem, preservando o histórico após uma limpeza.
+
+| Status | Significado |
+|---|---|
+| `pending` | Reservado ou aguardando nova tentativa conhecida |
+| `processing` | Tentativa registrada antes da chamada à Evolution |
+| `sent` | Chamada à Evolution concluída com sucesso |
+| `failed` | Limite de tentativas conhecido atingido |
+| `cancelled` | Contato excluído por opt-out |
+| `uncertain` | Resultado exige conferência antes de reenviar |
+
+Timeout, HTTP 5xx e tentativa interrompida geram resultado incerto.
+Rejeições HTTP 4xx e falhas locais anteriores à chamada respeitam o limite
+de tentativas. Quando a resposta foi preservada no Redis, o histórico pode
+ser reconciliado sem repetir o envio.
+
+Registros já reservados não são selecionados de novo pela descoberta, inclusive
+falhas e cancelamentos. Outra campanha representa uma nova abordagem.
+
+`sent` não confirma entrega ou leitura no celular. O webhook da Evolution ainda
+só recebe os eventos; persistir entrega, leitura, resposta e opt-out pelo webhook
+continua pendente. Opt-outs cadastrados na tabela já são respeitados.
+
+## Configuração e execução
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-```
-
-Instalar dependencias:
-
-```powershell
 pip install -r requirements.txt
 ```
 
-Conferir leads por lote:
+Configure as credenciais de banco, Evolution e Redis no ambiente dos containers.
+Redis e Evolution não precisam rodar nesta máquina.
 
-```powershell
-python scripts\sync_leads.py
-python scripts\sync_leads.py --lote lote1
+Variáveis principais:
+
+```env
+SUPABASE_SCHEMA=mkt_novauniao
+WHATSAPP_CAMPAIGN_NAME=Natal 2026
+WHATSAPP_OPENED_FROM=2026-11-17
+WHATSAPP_SEND_TIME=14:00
+CAMPAIGN_TIMEZONE=America/Sao_Paulo
+WHATSAPP_SCHEDULE_ENABLED=true
+WHATSAPP_SCHEDULE_DRY_RUN=false
+WHATSAPP_SCHEDULE_LIMIT=500
+WORKER_INTERVAL_SECONDS=60
+WORKER_BATCH_SIZE=1
+DEFAULT_SEND_DELAY_SECONDS=60
 ```
 
-Criar ou atualizar tabelas operacionais:
+`WHATSAPP_SCHEDULE_LIMIT` limita novos contatos por descoberta, não por dia.
+O ciclo aceita intervalo de 1 a 60 segundos para acompanhar o minuto de início.
+A campanha desta etapa é `Natal 2026`, com texto personalizado e sem imagem.
+Selecione-a explicitamente em `WHATSAPP_CAMPAIGN_NAME`. O código não escolhe outro
+template se essa variável estiver vazia. Confira a prévia antes da operação real.
+
+Preparar tabelas ou acrescentar colunas novas em outro ambiente:
 
 ```powershell
+python scripts\create_operational_tables.py --dry-run
 python scripts\create_operational_tables.py
 ```
 
-Enviar mensagem de teste:
+O script é idempotente e não limpa a origem, não altera triggers e não importa
+eventos de versões anteriores.
+
+Simular a seleção e conferir a quantidade de candidatos, sem criar reservas ou
+enviar mensagens:
 
 ```powershell
-python scripts\test_send.py --phone 5511999999999 --message "Ola! Veja esse post: https://instagram.com/p/Dbq1A8roEjQ/"
+python scripts\run_opened_campaign.py --dry-run
 ```
 
-Use `--link-preview` apenas se quiser testar explicitamente o card automatico
-do WhatsApp.
-
-Enviar preview de campanha para o numero interno:
+Executar `run_opened_campaign.py` sem `--dry-run` apenas cria as reservas,
+sem acessar Redis ou Evolution. Para a automação contínua:
 
 ```powershell
-python scripts\send_campaign_preview.py --campaign-number 1
-python scripts\send_campaign_preview.py --campaign-number 2 --dry-run
-python scripts\send_campaign_preview.py --all
+python scripts\cron_worker.py
 ```
 
-Por padrao, o preview vai para `5531994963959` e usa `Hugo` em `{{decisor}}`.
-Use `--phone` e `--decisor` para sobrescrever. O card automatico de link fica
-desativado por padrao; use `--link-preview` somente para testar esse card.
-Quando a campanha tiver `image_path`, o preview envia a imagem como midia com a
-mensagem no caption, igual ao disparo real.
-
-Subir API local/FastAPI:
+O worker pode fazer envios reais na janela diária. A API pode ser iniciada com:
 
 ```powershell
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-## Docker / EasyPanel
+## Templates, fila e infraestrutura
 
-O projeto tem dois containers separados:
-
-```text
-Dockerfile          API FastAPI
-Dockerfile.worker   Worker/cron de disparo da fila Redis
-```
-
-Tambem e necessario um servico Redis interno no EasyPanel.
-
-API:
-
-```bash
-docker build -t whatsapp-mkt-api -f Dockerfile .
-docker run --env-file .env -p 8000:8000 whatsapp-mkt-api
-```
-
-Worker/cron:
-
-```bash
-docker build -t whatsapp-mkt-worker -f Dockerfile.worker .
-docker run --env-file .env whatsapp-mkt-worker
-```
-
-No EasyPanel:
-
-```text
-Servico API
-- Dockerfile: Dockerfile
-- Porta interna: 8000
-- Health check: /health
-- Dominio: https://SEU_DOMINIO
-- Variavel REDIS_URL apontando para o servico Redis
-
-Servico Worker
-- Dockerfile: Dockerfile.worker
-- Sem dominio publico
-- Mesmo conjunto de variaveis de ambiente da API
-- Variavel REDIS_URL apontando para o servico Redis
-
-Servico Redis
-- Sem dominio publico
-- Persistencia/volume ativado, se disponivel
-```
-
-Variaveis Redis:
-
-```env
-REDIS_URL=redis://redis:6379/0
-REDIS_QUEUE_PREFIX=whatsapp_mkt
-REDIS_VISIBILITY_TIMEOUT_SECONDS=300
-REDIS_RETRY_DELAY_SECONDS=300
-REDIS_MAX_ATTEMPTS=3
-```
-
-Variaveis especificas do worker:
-
-```env
-WORKER_INTERVAL_SECONDS=60
-WORKER_BATCH_SIZE=1
-```
-
-Com `WORKER_BATCH_SIZE=1`, o worker processa no maximo uma mensagem por ciclo. O intervalo real entre mensagens tambem respeita `scheduled_at` da fila Redis e o rate limit interno quando o lote tiver mais de uma mensagem.
-
-Chaves Redis usadas pela fila:
-
-```text
-whatsapp_mkt:scheduled    mensagens agendadas/prontas para envio
-whatsapp_mkt:processing   mensagens em processamento com visibility timeout
-whatsapp_mkt:failed       mensagens que excederam tentativas
-whatsapp_mkt:message:*    payload de cada mensagem ativa
-```
-
-## Webhooks
-
-Webhook para configurar na Evolution API para receber eventos:
-
-```text
-POST https://SEU_DOMINIO/webhooks/evolution
-```
-
-Endpoint protegido para disparo manual/controlado:
-
-```text
-POST https://SEU_DOMINIO/webhooks/dispatch
-```
-
-Configure antes:
-
-```env
-APP_PUBLIC_URL=https://SEU_DOMINIO
-DISPATCH_WEBHOOK_TOKEN=um-token-longo-e-secreto
-# Tambem aceito pelo app, se ja estiver usando esse nome:
-EVOLUTION_TOKEN=um-token-longo-e-secreto
-```
-
-Headers aceitos:
-
-```text
-X-Dispatch-Token: um-token-longo-e-secreto
-Authorization: Bearer um-token-longo-e-secreto
-```
-
-Enviar mensagem direta de teste:
+A campanha `Natal 2026` e os cinco templates antigos estão em
+`campanhas/campanhas_extraidas.json`. Os links curtos da campanha foram conferidos;
+o link de orçamento preserva o texto pré-preenchido do WhatsApp. Os destinos
+originais também ficam no JSON para consulta. Campanhas com imagem são
+enviadas como mídia com o texto no caption. O preview de links fica desativado.
 
 ```powershell
-curl.exe -X POST "https://SEU_DOMINIO/webhooks/dispatch" `
-  -H "Content-Type: application/json" `
-  -H "X-Dispatch-Token: SEU_TOKEN" `
-  -d "{\"phone\":\"5511999999999\",\"message\":\"Ola! Veja esse post: https://instagram.com/p/Dbq1A8roEjQ/\",\"link_preview\":false}"
+python scripts\send_campaign_preview.py --campaign-name "Natal 2026" --dry-run
 ```
 
-Disparar uma campanha da fila de forma controlada:
+A fila usa `REDIS_QUEUE_PREFIX:v2`, por exemplo `whatsapp_mkt:v2:scheduled`,
+`whatsapp_mkt:v2:processing`, `whatsapp_mkt:v2:failed` e
+`whatsapp_mkt:v2:message:history:123`. Entradas antigas sem ID do histórico
+ficam isoladas no namespace anterior. Enfileirar novamente preserva uma
+mensagem que já está em processamento.
+
+- `Dockerfile`: API FastAPI, porta 8080, health check `GET /health`.
+- `Dockerfile.worker`: worker, sem domínio público e sem porta publicada.
+- Ambos executam com usuário sem privilégios e incluem os templates da campanha.
+- Redis e Evolution acessíveis pelos endereços do ambiente dos containers.
+- API e worker com credenciais compatíveis e tabelas preparadas.
+
+Endpoints: `POST /webhooks/evolution` e `POST /webhooks/dispatch`.
+O dispatch exige `DISPATCH_WEBHOOK_TOKEN` (ou `EVOLUTION_TOKEN`) em
+`X-Dispatch-Token` ou `Authorization: Bearer ...`.
+
+Mensagens diretas, previews e `run_campaign.py` são operações manuais e não
+seguem o controle de abertura da janela do worker. Os utilitários Google Sheets
+foram mantidos para uso manual legado; o worker não os importa nem consulta a
+planilha. Credenciais Google não são necessárias para a automação atual.
+
+## Preparação para o GitHub
+
+O remoto `origin` aponta para
+`amichiautomacoes/whatss-mkt-novauniao`, branch `main`. A preparação dos arquivos
+não faz commit, push ou implantação.
+
+`.env`, chaves privadas, credenciais Google, ambientes virtuais e arquivos
+locais estão excluídos do Git e do contexto Docker. Somente os modelos de
+ambiente sem credenciais devem ser versionados. Cadastre os valores reais
+diretamente no EasyPanel.
+
+O workflow [.github/workflows/ci.yml](.github/workflows/ci.yml) executa os testes
+e constrói as duas imagens em pushes para `main`, pull requests ou acionamento
+manual. Também confere imports, fuso horário, usuário do container e a resposta
+de `/health`, sem acessar Supabase, Redis ou Evolution. Ele não publica imagens
+nem implanta serviços.
+
+As dependências diretas estão fixadas nas versões do ambiente validado.
+`tzdata` garante os dados do fuso `America/Sao_Paulo` na imagem Python.
+
+## Testes
 
 ```powershell
-curl.exe -X POST "https://SEU_DOMINIO/webhooks/dispatch" `
-  -H "Content-Type: application/json" `
-  -H "X-Dispatch-Token: SEU_TOKEN" `
-  -d "{\"campaign_id\":1,\"batch_size\":1}"
+pip install -r requirements-dev.txt
+python -m pytest -q
 ```
 
-Rodar disparo de uma campanha:
-
-```powershell
-python scripts\run_campaign.py --campaign-id 1
-```
-
-## Proximo Passo
-
-Antes de disparar para os leads reais:
-
-1. Testar a conexao da Evolution API e confirmar que a instancia esta conectada.
-2. Enviar uma mensagem de teste para um numero nosso.
-3. Confirmar se o link curto do Instagram chega sem card automatico no WhatsApp.
-4. Rodar um teste controlado com `--batch-size 1` na Campanha 1.
-5. Se tudo estiver certo, deixar o agendamento rodar campanha por campanha.
-
-Comando sugerido para a proxima retomada:
-
-```powershell
-python scripts\test_send.py --phone SEU_NUMERO --message "Ola! Veja esse post: https://instagram.com/p/Dbq1A8roEjQ/"
-```
+Os testes bloqueiam conexões reais ao banco, Redis e Evolution. A fila usa
+Redis simulado com execução de Lua. São cobertos cálculo por calendário local,
+corte de elegibilidade, primeira abertura, simulação, opt-out, duplicidade,
+retomada na próxima janela e preservação do resultado após falhas.

@@ -7,9 +7,7 @@ from app.leads.normalization import normalize_phone
 
 
 def pick_lead_phone(lead: dict[str, Any]) -> str:
-    return normalize_phone(
-        str(lead.get("whatsapp_contato1") or lead.get("whatsapp_contato2") or "")
-    )
+    return normalize_phone(str(lead.get("telefone_contato") or ""))
 
 
 def build_queue_rows(
@@ -34,7 +32,8 @@ def build_queue_rows(
         rows.append(
             {
                 "campaign_id": campaign_id,
-                "lead_key": lead["lead_key"],
+                "source_id": lead["source_id"],
+                "lead_key": str(lead["lead_key"]),
                 "phone": phone,
                 "message": render_template(message_template, lead),
                 "image_path": image_path,

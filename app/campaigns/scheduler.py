@@ -1,11 +1,11 @@
 from datetime import date, datetime
 from pathlib import Path
 
-from app.campaigns.queue_builder import build_queue_rows
+from app.campaigns.queue_builder import build_queue_rows, pick_lead_phone
 from app.campaigns.templates import find_campaign_image_path
+from app.db.history import MessageHistoryRepository
 from app.db.repositories import (
     CampaignRepository,
-    MessageEventRepository,
     WhatsAppLeadRepository,
 )
 from app.leads.segmentation import filter_eligible_leads
@@ -17,7 +17,6 @@ def create_campaign_queue(
     limit: int | None = None,
     send_date: date | None = None,
     scheduled_start_at: datetime | None = None,
-    excluded_event_types: list[str] | None = None,
 ) -> int:
     campaign = CampaignRepository().get(campaign_id)
     if not campaign:
@@ -27,15 +26,12 @@ def create_campaign_queue(
 
     leads = WhatsAppLeadRepository().list_by_lote(campaign["lote"])
     eligible_leads = filter_eligible_leads(leads)
-    event_repo = MessageEventRepository()
-    already_used_lead_keys = event_repo.list_lead_keys_with_events(
-        campaign_id=campaign_id,
-        event_types=excluded_event_types or ["sent"],
-    )
+    history = MessageHistoryRepository()
+    already_used_phones = history.list_campaign_phones(campaign["name"])
     eligible_leads = [
         lead
         for lead in eligible_leads
-        if lead["lead_key"] not in already_used_lead_keys
+        if pick_lead_phone(lead) not in already_used_phones
     ]
     if limit is not None:
         eligible_leads = eligible_leads[:limit]
@@ -52,18 +48,11 @@ def create_campaign_queue(
         send_date=send_date,
         scheduled_start_at=scheduled_start_at,
     )
-    inserted = RedisMessageQueue().enqueue_many(rows)
+    reserved_rows = []
     for row in rows:
-        event_repo.create(
-            event_type="queued",
-            payload={
-                "redis_message_id": f"{row['campaign_id']}:{row['lead_key']}",
-                "scheduled_at": row["scheduled_at"].isoformat(),
-                "image_path": row.get("image_path") or "",
-            },
-            campaign_id=row["campaign_id"],
-            lead_key=row["lead_key"],
-            phone=row["phone"],
-        )
+        history_id = history.reserve(row, campaign["name"])
+        if history_id is not None:
+            reserved_rows.append({**row, "history_id": history_id})
+    inserted = RedisMessageQueue().enqueue_many(reserved_rows)
     CampaignRepository().update_status(campaign_id, "queued")
     return inserted

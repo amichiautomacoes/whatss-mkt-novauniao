@@ -96,7 +96,7 @@ def run_due_scheduled_campaigns(
     if not scheduled_campaigns:
         return []
 
-    templates = _load_campaign_templates()
+    templates = load_campaign_templates()
     campaign_repo = CampaignRepository()
     tz = ZoneInfo(settings.campaign_timezone)
     results: list[ScheduledRunResult] = []
@@ -134,7 +134,6 @@ def run_due_scheduled_campaigns(
             campaign_id=campaign["id"],
             limit=row_limit,
             scheduled_start_at=start_at,
-            excluded_event_types=["queued", "sent"],
         )
         results.append(
             ScheduledRunResult(

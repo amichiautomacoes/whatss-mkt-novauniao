@@ -1,79 +1,85 @@
-import os
 import time
-from datetime import datetime
+from datetime import datetime, time as day_time, timedelta
 from zoneinfo import ZoneInfo
 
-import _path  # noqa: F401
+try:
+    import _path  # noqa: F401
+except ModuleNotFoundError:
+    from scripts import _path  # noqa: F401
+
 from loguru import logger
 
-from app.config import get_settings
+from app.campaigns.scheduling import DailySendWindow, parse_hhmm
+from app.config import Settings, get_settings
 from app.utils.logging import configure_logging
 from app.whatsapp.dispatcher import dispatch_campaign_messages
-from run_scheduled_campaign import parse_bool_env, run_due_scheduled_campaigns
+from scripts.run_opened_campaign import schedule_opened_email_campaign
 
 
-def _read_positive_int(name: str, default: int) -> int:
-    raw_value = os.getenv(name)
-    if not raw_value:
-        return default
-
+def run_worker_cycle(settings: Settings, window: DailySendWindow, now: datetime) -> int:
+    if not settings.whatsapp_schedule_enabled:
+        return 0
     try:
-        value = int(raw_value)
-    except ValueError:
-        logger.warning("{} must be an integer. Using default: {}", name, default)
-        return default
+        result = schedule_opened_email_campaign(
+            settings, now, dry_run=settings.whatsapp_schedule_dry_run,
+        )
+        logger.info(
+            "Supabase openings: eligible={} reserved={} dry_run={}",
+            result.eligible, result.reserved, result.dry_run,
+        )
+        if settings.whatsapp_schedule_dry_run or not window.is_open(now):
+            return 0
+        if result.campaign_id is None:
+            return 0
+        tz = ZoneInfo(settings.campaign_timezone)
+        next_midnight = datetime.combine(
+            now.astimezone(tz).date() + timedelta(days=1), day_time.min, tzinfo=tz,
+        )
+        reservation_cutoff = datetime.combine(
+            now.astimezone(tz).date(), parse_hhmm(settings.whatsapp_send_time), tzinfo=tz,
+        ) + timedelta(minutes=1)
+        return dispatch_campaign_messages(
+            batch_size=settings.worker_batch_size, campaign_id=result.campaign_id,
+            dispatch_until=next_midnight,
+            reserved_before=reservation_cutoff,
+        )
+    except Exception:
+        # A failed operational cycle closes today's window, avoiding late recovery.
+        window.suspend(now)
+        raise
 
-    if value < 1:
-        logger.warning("{} must be positive. Using default: {}", name, default)
-        return default
 
-    return value
+def seconds_until_next_cycle(settings: Settings, now: datetime) -> float:
+    tz = ZoneInfo(settings.campaign_timezone)
+    local_now = now.astimezone(tz)
+    start = datetime.combine(
+        local_now.date(), parse_hhmm(settings.whatsapp_send_time), tzinfo=tz,
+    )
+    delay = max(settings.worker_interval_seconds, settings.default_send_delay_seconds)
+    if local_now < start:
+        return min(delay, (start - local_now).total_seconds())
+    return delay
 
 
 def main() -> None:
     configure_logging()
     settings = get_settings()
-    interval_seconds = _read_positive_int("WORKER_INTERVAL_SECONDS", 60)
-    batch_size = _read_positive_int("WORKER_BATCH_SIZE", settings.default_batch_size)
-    schedule_enabled = parse_bool_env(os.getenv("WHATSAPP_SCHEDULE_ENABLED"), True)
-    schedule_dry_run = parse_bool_env(os.getenv("WHATSAPP_SCHEDULE_DRY_RUN"), False)
-
+    window = DailySendWindow(settings=settings)
     logger.info(
-        "Worker started with interval={}s batch_size={} schedule_enabled={} schedule_dry_run={}",
-        interval_seconds,
-        batch_size,
-        schedule_enabled,
-        schedule_dry_run,
+        "Worker using Supabase openings: campaign={} opened_from={} send_time={} timezone={} dry_run={}",
+        settings.whatsapp_campaign_name, settings.whatsapp_opened_from,
+        settings.whatsapp_send_time, settings.campaign_timezone, settings.whatsapp_schedule_dry_run,
     )
-
     while True:
-        if schedule_enabled:
-            try:
-                now = datetime.now(ZoneInfo(settings.campaign_timezone))
-                scheduled_results = run_due_scheduled_campaigns(
-                    settings=settings,
-                    run_date=now.date(),
-                    run_time=now.time().replace(second=0, microsecond=0),
-                    dry_run=schedule_dry_run,
-                )
-                for result in scheduled_results:
-                    logger.info(
-                        "Scheduled campaign processed: campaign={} lote={} queued={} dry_run={}",
-                        result.scheduled.campaign_name,
-                        result.scheduled.lote_key,
-                        result.queued,
-                        result.dry_run,
-                    )
-            except Exception:
-                logger.exception("Scheduled campaign sync failed")
-
+        now = datetime.now(ZoneInfo(settings.campaign_timezone))
         try:
-            sent_count = dispatch_campaign_messages(batch_size=batch_size)
+            sent_count = run_worker_cycle(settings, window, now)
             logger.info("Worker cycle completed. sent_count={}", sent_count)
         except Exception:
-            logger.exception("Worker cycle failed")
-
-        time.sleep(interval_seconds)
+            logger.exception("Worker cycle failed; pending sends wait for the next daily window")
+        time.sleep(seconds_until_next_cycle(
+            settings, datetime.now(ZoneInfo(settings.campaign_timezone)),
+        ))
 
 
 if __name__ == "__main__":

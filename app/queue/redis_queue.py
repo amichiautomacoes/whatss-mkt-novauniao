@@ -7,6 +7,22 @@ from redis import Redis
 from app.config import get_settings
 
 
+ENQUEUE_IF_ABSENT = """
+if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+redis.call('HSET', KEYS[1], unpack(ARGV, 3))
+redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
+return 1
+"""
+
+
+CLAIM_PENDING = """
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then return 0 end
+redis.call('HSET', KEYS[3], 'status', 'processing', 'updated_at', ARGV[3])
+redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+return 1
+"""
+
+
 class RedisMessageQueue:
     def __init__(self) -> None:
         settings = get_settings()
@@ -15,7 +31,8 @@ class RedisMessageQueue:
 
         self.settings = settings
         self.client = Redis.from_url(settings.redis_url, decode_responses=True)
-        self.prefix = settings.redis_queue_prefix.strip(":")
+        # Old queue entries have no durable history ID and must not enter this flow.
+        self.prefix = f"{settings.redis_queue_prefix.strip(':')}:v2"
 
     @property
     def scheduled_key(self) -> str:
@@ -32,28 +49,26 @@ class RedisMessageQueue:
     def _message_key(self, message_id: str) -> str:
         return f"{self.prefix}:message:{message_id}"
 
-    def _message_id(self, campaign_id: int, lead_key: str) -> str:
-        return f"{campaign_id}:{lead_key}"
+    def _message_id(self, history_id: int) -> str:
+        return f"history:{history_id}"
 
     def enqueue_many(self, rows: list[dict[str, Any]]) -> int:
         if not rows:
             return 0
 
         now = datetime.now(timezone.utc).isoformat()
-        queued_count = 0
-
         with self.client.pipeline(transaction=True) as pipe:
             for row in rows:
-                message_id = self._message_id(row["campaign_id"], row["lead_key"])
+                message_id = self._message_id(row["history_id"])
                 key = self._message_key(message_id)
                 scheduled_at = row["scheduled_at"]
                 score = scheduled_at.timestamp()
-                exists = self.client.exists(key)
-
                 payload = {
                     "id": message_id,
+                    "history_id": str(row["history_id"]),
+                    "source_id": str(row["source_id"]),
                     "campaign_id": str(row["campaign_id"]),
-                    "lead_key": row["lead_key"],
+                    "lead_key": str(row["lead_key"]),
                     "phone": row["phone"],
                     "message": row["message"],
                     "image_path": row.get("image_path") or "",
@@ -64,19 +79,12 @@ class RedisMessageQueue:
                     "updated_at": now,
                     "last_error": "",
                     "provider_response": "",
+                    "accepted_at": "",
                 }
-
-                pipe.hset(key, mapping=payload)
-                pipe.zadd(self.scheduled_key, {message_id: score})
-                pipe.zrem(self.processing_key, message_id)
-                pipe.zrem(self.failed_key, message_id)
-
-                if not exists:
-                    queued_count += 1
-
-            pipe.execute()
-
-        return queued_count
+                fields = [value for pair in payload.items() for value in pair]
+                pipe.eval(ENQUEUE_IF_ABSENT, 2, key, self.scheduled_key, score, message_id, *fields)
+            results = pipe.execute()
+        return sum(int(result) for result in results)
 
     def requeue_expired_processing(self) -> int:
         now_score = datetime.now(timezone.utc).timestamp()
@@ -121,8 +129,7 @@ class RedisMessageQueue:
             self.scheduled_key,
             min="-inf",
             max=now_score,
-            start=0,
-            num=max(limit * 5, limit),
+            **({"start": 0, "num": max(limit * 5, limit)} if campaign_id is None else {}),
         )
 
         messages: list[dict[str, Any]] = []
@@ -141,21 +148,26 @@ class RedisMessageQueue:
             if campaign_id is not None and int(row["campaign_id"]) != campaign_id:
                 continue
 
-            removed = self.client.zrem(self.scheduled_key, message_id)
-            if not removed:
-                continue
-
-            self.client.hset(
-                key,
-                mapping={
-                    "status": "processing",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
+            claimed = self.client.eval(
+                CLAIM_PENDING, 3, self.scheduled_key, self.processing_key, key,
+                message_id, processing_deadline, datetime.now(timezone.utc).isoformat(),
             )
-            self.client.zadd(self.processing_key, {message_id: processing_deadline})
+            if not claimed:
+                continue
             messages.append(self._decode_row(row | {"status": "processing"}))
 
         return messages
+
+    def record_provider_response(
+        self, message_id: str, provider_response: dict[str, Any], accepted_at: datetime,
+    ) -> None:
+        self.client.hset(
+            self._message_key(message_id),
+            mapping={
+                "provider_response": json.dumps(provider_response, ensure_ascii=False),
+                "accepted_at": accepted_at.isoformat(),
+            },
+        )
 
     def mark_sent(self, message_id: str, provider_response: dict[str, Any]) -> None:
         key = self._message_key(message_id)
@@ -222,6 +234,8 @@ class RedisMessageQueue:
     def _decode_row(self, row: dict[str, str]) -> dict[str, Any]:
         return {
             "id": row["id"],
+            "history_id": int(row["history_id"]),
+            "source_id": int(row["source_id"]),
             "campaign_id": int(row["campaign_id"]),
             "lead_key": row["lead_key"],
             "phone": row["phone"],
@@ -231,4 +245,6 @@ class RedisMessageQueue:
             "attempts": int(row.get("attempts") or 0),
             "scheduled_at": row["scheduled_at"],
             "last_error": row.get("last_error") or None,
+            "provider_response": json.loads(row["provider_response"]) if row.get("provider_response") else None,
+            "accepted_at": row.get("accepted_at") or None,
         }

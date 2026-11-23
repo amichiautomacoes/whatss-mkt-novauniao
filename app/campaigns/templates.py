@@ -3,7 +3,7 @@ import re
 import unicodedata
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 
 CAMPAIGN_TEMPLATES_PATH = Path("campanhas/campanhas_extraidas.json")
@@ -45,7 +45,10 @@ def find_campaign_image_path(campaign_name: str) -> str:
 
 def render_template(template: str, lead: dict[str, Any]) -> str:
     message = template
-    for key, value in lead.items():
+    variables = dict(lead)
+    variables.setdefault("decisor", lead.get("nome_decisor", ""))
+    variables.setdefault("lote", lead.get("lote_key", ""))
+    for key, value in variables.items():
         message = message.replace(f"{{{{{key}}}}}", str(value or ""))
     message = shorten_marketing_links(message)
     return re.sub(r"\s+([!?.,:;])", r"\1", message)
@@ -76,13 +79,21 @@ def _shorten_url(url: str) -> str:
         phone = parse_qs(parsed.query).get("phone", [""])[0]
         digits = re.sub(r"\D", "", phone)
         if digits:
-            return f"https://wa.me/{digits}"
+            return _whatsapp_short_url(digits, parsed.query)
 
     if host == "wa.me":
         digits = re.sub(r"\D", "", parsed.path)
         if digits:
-            return f"https://wa.me/{digits}"
+            return _whatsapp_short_url(digits, parsed.query)
 
+    return url
+
+
+def _whatsapp_short_url(phone: str, query: str) -> str:
+    url = f"https://wa.me/{phone}"
+    text = parse_qs(query).get("text", [""])[0]
+    if text:
+        url += "?" + urlencode({"text": text}, quote_via=quote)
     return url
 
 

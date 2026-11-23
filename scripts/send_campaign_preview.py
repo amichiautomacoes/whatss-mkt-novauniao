@@ -10,7 +10,7 @@ try:
 except ModuleNotFoundError:
     from scripts import _path  # noqa: F401
 
-from app.campaigns.templates import render_template
+from app.campaigns.templates import find_campaign_template, render_template
 from app.utils.logging import configure_logging
 from app.whatsapp.evolution_client import EvolutionClient
 
@@ -30,17 +30,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Send campaign template previews to the configured test phone."
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
         "--campaign-number",
         type=int,
-        default=1,
-        help="1-based campaign number. Default: 1.",
+        help="Number from an existing template name, for example 2 for Campanha 2.",
     )
-    parser.add_argument(
+    selection.add_argument(
         "--all",
         action="store_true",
         help="Send every campaign template in order.",
     )
+    selection.add_argument("--campaign-name", help="Exact name of the campaign template.")
     parser.add_argument(
         "--phone",
         default=DEFAULT_PREVIEW_PHONE,
@@ -84,19 +85,17 @@ def load_templates(path: Path) -> list[dict[str, Any]]:
 
 def pick_templates(
     templates: list[dict[str, Any]],
-    campaign_number: int,
+    campaign_number: int | None,
     send_all: bool,
+    campaign_name: str | None = None,
 ) -> list[dict[str, Any]]:
     if send_all:
         return templates
 
-    index = campaign_number - 1
-    if index < 0 or index >= len(templates):
-        raise RuntimeError(
-            f"Campaign number {campaign_number} not found. "
-            f"Available: 1 to {len(templates)}."
-        )
-    return [templates[index]]
+    if campaign_name is None and campaign_number is None:
+        raise RuntimeError("Choose --campaign-name, --campaign-number or --all.")
+    name = campaign_name if campaign_name is not None else f"Campanha {campaign_number}"
+    return [find_campaign_template(name, templates)]
 
 
 def build_test_lead(args: argparse.Namespace) -> dict[str, str]:
@@ -119,6 +118,7 @@ def main() -> None:
         load_templates(Path(args.templates_file)),
         campaign_number=args.campaign_number,
         send_all=args.all,
+        campaign_name=args.campaign_name,
     )
     lead = build_test_lead(args)
     client = None if args.dry_run else EvolutionClient()
